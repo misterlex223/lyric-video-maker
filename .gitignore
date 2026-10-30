@@ -1,0 +1,23 @@
+# 成品音樂不進版權庫（請自行放入，見 README）
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.aac
+*.ogg
+
+# 系統與編輯器
+.DS_Store
+Thumbs.db
+._*
+
+# 本機暫存 / 測試素材
+_smoke/
+smoke.html
+private/
+*.local.*
+
+# 依賴
+node_modules/
+.venv/
+__pycache__/
