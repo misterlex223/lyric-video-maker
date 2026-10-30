@@ -22,8 +22,6 @@
   <div class="actions">
     <button class="btn ghost" id="btn-guides" title="显示构图参考线">参考线</button>
     <button class="btn ghost" id="btn-fs">全屏</button>
-    <button class="btn ghost" id="btn-preset-save">存预设</button>
-    <button class="btn ghost" id="btn-preset-load">读预设</button>
     <button class="btn rec" id="btn-rec">● 录制导出</button>
   </div>
 </header>
@@ -43,6 +41,31 @@
 
   <!-- ============ 右侧参数面板 ============ -->
   <aside class="panel" id="panel">
+
+    <details open class="proj-sec">
+      <summary>项目管理 <span class="pbadge" id="proj-saved">已保存</span></summary>
+      <div class="grp">
+        <div class="row">
+          <span class="lb">当前项目</span>
+          <select id="proj-sel"></select>
+        </div>
+        <div class="row btns">
+          <button class="btn" id="proj-new" title="新建一个空项目">新建</button>
+          <button class="btn" id="proj-save" title="把当前设定存进该项目">保存</button>
+          <button class="btn" id="proj-rename">重命名</button>
+          <button class="btn" id="proj-del">删除</button>
+        </div>
+        <div class="row btns">
+          <button class="btn" id="proj-export">导出 JSON</button>
+          <button class="btn" id="proj-import">导入 JSON</button>
+          <input type="file" id="file-project" accept=".json,application/json" hidden>
+        </div>
+        <div class="hint" id="proj-hint">
+          设定与歌词随项目自动保存；音乐与背景图存在本机索引库，重开浏览器可继续。<br>
+          导出的 JSON 是纯设定（含歌词文本、不含音频/图片二进制）。
+        </div>
+      </div>
+    </details>
 
     <details open>
       <summary>歌词与双语</summary>

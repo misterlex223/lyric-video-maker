@@ -55,6 +55,8 @@
   const S = {
     audioName: '', bgName: '', mainName: '', subName: '',
     main: null, sub: null, pairs: [],
+    src: { audio: null, bg: null, main: null, sub: null },   // 素材登记表（进项目 JSON）
+    bgReady: false,
     previewIdx: 0,
     guides: false,
     recording: false,
@@ -172,6 +174,7 @@
       S.pairs.forEach(p => p._k = null);
     }
     if (key === 'drag') { updateOverlay(); }
+    scheduleSave();
     requestDraw();
   }
 
@@ -190,6 +193,259 @@
     });
   }
 
+  /* ============================================================
+     素材二进制库（IndexedDB）—— 音乐与背景图本体存这里
+     ============================================================ */
+  const MediaDB = (function () {
+    const NAME = 'lvm-media', STORE = 'files';
+    let dbp = null;
+    function open() {
+      if (dbp) return dbp;
+      dbp = new Promise((res, rej) => {
+        if (!('indexedDB' in window)) return rej(new Error('no-idb'));
+        const r = indexedDB.open(NAME, 1);
+        r.onupgradeneeded = e => {
+          const d = e.target.result;
+          if (!d.objectStoreNames.contains(STORE)) d.createObjectStore(STORE);
+        };
+        r.onsuccess = e => res(e.target.result);
+        r.onerror = e => rej(e);
+      }).catch(e => { console.warn('IndexedDB 不可用，素材将无法自动恢复', e); return null; });
+      return dbp;
+    }
+    return {
+      async get(k) {
+        const d = await open(); if (!d) return null;
+        return new Promise(res => {
+          try {
+            const q = d.transaction(STORE, 'readonly').objectStore(STORE).get(k);
+            q.onsuccess = () => res(q.result || null); q.onerror = () => res(null);
+          } catch (e) { res(null); }
+        });
+      },
+      async put(k, v) {
+        const d = await open(); if (!d) return false;
+        return new Promise(res => {
+          try {
+            const t = d.transaction(STORE, 'readwrite');
+            t.objectStore(STORE).put(v, k);
+            t.oncomplete = () => res(true); t.onerror = () => res(false);
+          } catch (e) { res(false); }
+        });
+      },
+      async del(k) {
+        const d = await open(); if (!d) return;
+        try { d.transaction(STORE, 'readwrite').objectStore(STORE).delete(k); } catch (e) { }
+      }
+    };
+  })();
+
+  /* ============================================================
+     项目管理 —— 设定 JSON 存 localStorage，可导出 / 导入文件
+     ============================================================ */
+  const PJ_KEY = 'lvm.projects.v2';
+  const PJ = { list: [], cur: null };
+  const uid = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const HINT_DEF = '设定与歌词随项目自动保存；音乐与背景图存在本机素材库，重开浏览器可继续。<br>导出的 JSON 是纯设定（含歌词文本，不含音频/图片二进制）。';
+
+  let saveTimer = null, lastSave = 0;
+  function curProject() { return PJ.list.find(p => p.id === PJ.cur) || null; }
+  function newProjectObj(name) {
+    return {
+      id: uid(), name: name, updatedAt: Date.now(),
+      cfg: Object.assign({}, DEF),
+      sources: { audio: null, bg: null, main: null, sub: null },
+      playhead: 0
+    };
+  }
+  function markSaved() {
+    const b = $('proj-saved'); if (b) { b.textContent = '已保存'; b.classList.remove('dirty'); }
+  }
+  function markDirty() {
+    const b = $('proj-saved'); if (b) { b.textContent = '未保存…'; b.classList.add('dirty'); }
+  }
+  function projHint(msg, sticky) {
+    const el = $('proj-hint'); if (!el) return;
+    el.innerHTML = esc(msg) + (sticky === false ? '' : '<br>' + HINT_DEF);
+    if (sticky !== true) clearTimeout(projHint._t), projHint._t = setTimeout(() => el.innerHTML = HINT_DEF, 6000);
+  }
+  function persistIndex() {
+    try { localStorage.setItem(PJ_KEY, JSON.stringify({ list: PJ.list, cur: PJ.cur })); return true; }
+    catch (e) { projHint('保存失败：' + (e && e.message ? e.message : '本机存储已满，请先删除旧项目')); return false; }
+  }
+  function loadIndex() {
+    try {
+      const raw = localStorage.getItem(PJ_KEY);
+      const j = raw ? JSON.parse(raw) : null;
+      if (j && Array.isArray(j.list) && j.list.length) {
+        PJ.list = j.list; PJ.cur = j.cur || j.list[0].id; return;
+      }
+    } catch (e) { }
+    const p = newProjectObj('未命名项目');
+    PJ.list = [p]; PJ.cur = p.id; persistIndex();
+  }
+  function snapshot() {
+    const p = curProject(); if (!p) return;
+    p.cfg = Object.assign({}, C);
+    p.sources = JSON.parse(JSON.stringify(S.src));
+    if (audioEl.src && !isNaN(audioEl.duration) && audioEl.currentTime > 0) p.playhead = audioEl.currentTime;
+    p.updatedAt = Date.now();
+    if (persistIndex()) markSaved();
+  }
+  function scheduleSave(opt) {
+    const thr = opt && opt.throttle;
+    if (!thr) markDirty();
+    clearTimeout(saveTimer);
+    if (thr) {
+      // 播放中的播放头位置：最多每 4 秒落盘一次，且不标记为「未保存」
+      const wait = Math.max(400, 4000 - (Date.now() - lastSave));
+      saveTimer = setTimeout(() => { snapshot(); lastSave = Date.now(); }, wait);
+    } else {
+      saveTimer = setTimeout(() => { snapshot(); lastSave = Date.now(); }, 700);
+    }
+  }
+  function flushSave() { clearTimeout(saveTimer); snapshot(); lastSave = Date.now(); }
+
+  function renderProjectSelect() {
+    const sel = $('proj-sel'); if (!sel) return;
+    sel.innerHTML = PJ.list.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+    sel.value = PJ.cur || '';
+  }
+
+  function clearMedia() {
+    audioEl.pause();
+    audioEl.removeAttribute('src'); audioEl.load();
+    if (S.audioURL) URL.revokeObjectURL(S.audioURL);
+    S.audioURL = null; S.audioName = '';
+    S.bgReady = false; S.bgName = '';
+    S.main = null; S.sub = null; S.mainName = ''; S.subName = '';
+    S.pairs = []; S.previewIdx = 0;
+    S.src = { audio: null, bg: null, main: null, sub: null };
+    updateTags(); rebuild(); requestDraw();
+  }
+
+  async function switchTo(id, quiet) {
+    const p = PJ.list.find(x => x.id === id); if (!p) return;
+    PJ.cur = id; persistIndex(); renderProjectSelect();
+
+    Object.assign(C, Object.assign({}, DEF), p.cfg || {});
+    Object.keys(BIND).forEach(writeEl);
+    updateVisibility(); updateOverlay();
+
+    clearMedia();
+    const s = p.sources || {};
+    const missing = [];
+    if (s.audio) {
+      const blob = await MediaDB.get(id + ':audio');
+      if (blob) setAudio(blob, false); else missing.push(s.audio.name);
+    }
+    if (s.bg) {
+      const blob = await MediaDB.get(id + ':bg');
+      if (blob) setBg(blob, false); else missing.push(s.bg.name);
+    }
+    if (s.main && s.main.text) applyLrcText(s.main.text, s.main.name, 'main', false);
+    if (s.sub && s.sub.text) applyLrcText(s.sub.text, s.sub.name, 'sub', false);
+
+    S.pairs.forEach(pp => pp._k = null);
+    rebuild();
+    if (p.playhead) {
+      const restore = () => { try { audioEl.currentTime = p.playhead; } catch (e) { } };
+      if (audioEl.readyState >= 1) restore(); else audioEl.addEventListener('loadedmetadata', restore, { once: true });
+    }
+    requestDraw(); markSaved();
+    if (missing.length) projHint('素材库里找不到：' + missing.join('、') + '（换了机器或清过缓存就会这样，重新载入一次即可）');
+    else if (!quiet) projHint('已切换到「' + p.name + '」');
+  }
+
+  function createProject(name) {
+    flushSave();
+    const p = newProjectObj(name);
+    p.cfg = Object.assign({}, C);                  // 沿用当前样式当起点
+    PJ.list.push(p); PJ.cur = p.id; persistIndex(); renderProjectSelect();
+    clearMedia();
+    snapshot();
+    projHint('已新建项目「' + p.name + '」，沿用当前样式设定');
+  }
+  function deleteProject() {
+    const p = curProject(); if (!p) return;
+    if (PJ.list.length === 1) { alert('至少要保留一个项目'); return; }
+    if (!confirm('删除项目「' + p.name + '」？设定与本机素材都会清除，此操作无法复原。')) return;
+    MediaDB.del(p.id + ':audio'); MediaDB.del(p.id + ':bg');
+    PJ.list = PJ.list.filter(x => x.id !== p.id);
+    PJ.cur = PJ.list[0].id; persistIndex(); renderProjectSelect();
+    switchTo(PJ.cur, true);
+  }
+  function renameProject() {
+    const p = curProject(); if (!p) return;
+    const n = prompt('项目名称', p.name); if (n == null) return;
+    p.name = n.trim() || p.name; persistIndex(); renderProjectSelect(); scheduleSave();
+  }
+
+  /* 导出 / 导入 JSON */
+  function download(blob, filename) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 15000);
+  }
+  function exportProject() {
+    flushSave();
+    const p = curProject(); if (!p) return;
+    const data = {
+      app: 'lyric-video-maker', format: 1,
+      name: p.name, updatedAt: new Date(p.updatedAt || Date.now()).toISOString(),
+      cfg: p.cfg || C,
+      lyrics: { main: p.sources.main || null, sub: p.sources.sub || null },
+      assets: { audio: p.sources.audio ? p.sources.audio.name : null, bg: p.sources.bg ? p.sources.bg.name : null },
+      playhead: p.playhead || 0
+    };
+    download(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
+      (p.name || 'project').replace(/[\\/:*?"<>|]/g, '_') + '.lyricproj.json');
+    projHint('已导出 ' + p.name + '.lyricproj.json');
+  }
+  function importProject(file) {
+    const fr = new FileReader();
+    fr.onload = () => {
+      let data;
+      try { data = JSON.parse(fr.result); }
+      catch (e) { alert('不是有效的 JSON 文件：' + file.name); return; }
+      if (data && (data.app === 'lyric-video-maker' || data.cfg)) {
+        flushSave();                               // 先存好手上的项目，再建立新项目
+        const p = newProjectObj((data.name || file.name.replace(/\.json$/i, '')) + '（导入）');
+        p.cfg = Object.assign({}, DEF, data.cfg || {});
+        p.sources = {
+          audio: (data.assets && data.assets.audio) ? { name: data.assets.audio, size: 0 } : null,
+          bg: (data.assets && data.assets.bg) ? { name: data.assets.bg, size: 0 } : null,
+          main: (data.lyrics && data.lyrics.main) || null,
+          sub: (data.lyrics && data.lyrics.sub) || null
+        };
+        p.playhead = data.playhead || 0;
+        PJ.list.push(p); PJ.cur = p.id; persistIndex(); renderProjectSelect();
+        switchTo(p.id, true);
+        const need = [p.sources.audio && p.sources.audio.name, p.sources.bg && p.sources.bg.name].filter(Boolean);
+        projHint('已导入「' + p.name + '」' + (need.length ? '，请重新载入音乐与背景图：' + need.join('、') : ''));
+      } else alert('这不是本项目导出的 JSON：缺少 app / cfg 字段');
+    };
+    fr.readAsText(file, 'utf-8');
+  }
+  function bindProjectUI() {
+    // 切换前先把当前项目落盘；注意顺序，别让快照盖掉即将载入的项目
+    $('proj-sel').addEventListener('change', e => { flushSave(); switchTo(e.target.value); });
+    $('proj-new').addEventListener('click', () => {
+      const n = prompt('新项目名称', '未命名项目 ' + (PJ.list.length + 1));
+      if (n == null) return; createProject(n.trim() || '未命名项目 ' + (PJ.list.length + 1));
+    });
+    $('proj-save').addEventListener('click', () => { snapshot(); projHint('已保存当前设定'); });
+    $('proj-rename').addEventListener('click', renameProject);
+    $('proj-del').addEventListener('click', deleteProject);
+    $('proj-export').addEventListener('click', exportProject);
+    $('proj-import').addEventListener('click', () => $('file-project').click());
+    $('file-project').addEventListener('change', e => {
+      const f = e.target.files[0]; if (f) importProject(f);
+      e.target.value = '';
+    });
+  }
+
   /* ---------------- 文件载入 ---------------- */
   function bindFileBtn(btnId, inputId, onPick) {
     $(btnId).addEventListener('click', () => $(inputId).click());
@@ -199,24 +455,44 @@
       e.target.value = '';
     });
   }
-  bindFileBtn('btn-audio', 'file-audio', f => {
-    if (S.audioURL) URL.revokeObjectURL(S.audioURL);
-    S.audioURL = URL.createObjectURL(f);
-    audioEl.src = S.audioURL;
-    S.audioName = f.name.replace(/\.[^.]+$/, '');
-    $('empty-hint') && ($('empty-hint').style.display = 'none');
-    updateTags();
-  });
-  bindFileBtn('btn-bg', 'file-bg', f => {
-    if (S.bgURL) URL.revokeObjectURL(S.bgURL);
-    S.bgURL = URL.createObjectURL(f);
-    bgImg.onload = () => { $('empty-hint').style.display = 'none'; requestDraw(); };
-    bgImg.src = S.bgURL;
-    S.bgName = f.name;
-    updateTags();
-  });
+  bindFileBtn('btn-audio', 'file-audio', f => setAudio(f, true));
+  bindFileBtn('btn-bg', 'file-bg', f => setBg(f, true));
   bindFileBtn('btn-lrc-main', 'file-lrc-main', f => loadLrc(f, 'main'));
   bindFileBtn('btn-lrc-sub', 'file-lrc-sub', f => loadLrc(f, 'sub'));
+
+  /* 素材载入：同时登记到当前项目，二进制存进 IndexedDB，LRC 文本直接进 JSON */
+  function setAudio(blob, record) {
+    if (S.audioURL) URL.revokeObjectURL(S.audioURL);
+    S.audioURL = URL.createObjectURL(blob);
+    audioEl.src = S.audioURL;
+    const name = blob.name || 'audio';
+    S.audioName = name.replace(/\.[^.]+$/, '');
+    S.src.audio = { name: name, size: blob.size || 0 };
+    $('empty-hint').style.display = 'none';
+    updateTags();
+    if (record) {
+      const p = curProject();
+      if (p) MediaDB.put(p.id + ':audio', blob);
+      scheduleSave();
+    }
+  }
+  function setBg(blob, record) {
+    if (S.bgURL) URL.revokeObjectURL(S.bgURL);
+    S.bgURL = URL.createObjectURL(blob);
+    bgImg.onload = () => { S.bgReady = true; $('empty-hint').style.display = 'none'; requestDraw(); };
+    bgImg.onerror = () => { S.bgReady = false; requestDraw(); };
+    S.bgReady = false;
+    bgImg.src = S.bgURL;
+    const name = blob.name || 'background';
+    S.bgName = name;
+    S.src.bg = { name: name, size: blob.size || 0 };
+    updateTags();
+    if (record) {
+      const p = curProject();
+      if (p) MediaDB.put(p.id + ':bg', blob);
+      scheduleSave();
+    }
+  }
 
   function loadLrc(file, slot) {
     const fr = new FileReader();
@@ -224,19 +500,20 @@
       let text = fr.result;
       if (/\uFFFD/.test(text)) {                       // 疑似 GBK，重读
         const fr2 = new FileReader();
-        fr2.onload = () => { applyLrc(fr2.result, file.name, slot); };
+        fr2.onload = () => applyLrcText(fr2.result, file.name, slot, true);
         fr2.readAsText(file, 'gbk');
         return;
       }
-      applyLrc(text, file.name, slot);
+      applyLrcText(text, file.name, slot, true);
     };
     fr.readAsText(file, 'utf-8');
   }
-  function applyLrc(text, name, slot) {
+  function applyLrcText(text, name, slot, record) {
     const parsed = LRC.parse(text);
     if (!parsed.lines.length) { alert('没有解析到歌词：' + name); return; }
     S[slot] = parsed;
     S[slot + 'Name'] = name;
+    S.src[slot] = { name: name, text: text };
     if (slot === 'main') {
       S.title = parsed.meta.ti || name.replace(/\.[^.]+$/, '');
       S.artist = parsed.meta.ar || '';
@@ -244,6 +521,7 @@
     $('empty-hint').style.display = 'none';
     updateTags();
     rebuild();
+    if (record) scheduleSave();
   }
 
   function updateTags() {
@@ -379,7 +657,7 @@
   function drawBackground() {
     ctx.fillStyle = C.canvasBg;
     ctx.fillRect(0, 0, W, H);
-    if (!bgImg.src || !bgImg.width) return;
+    if (!S.bgReady || !bgImg.width) return;
 
     const iw = bgImg.width, ih = bgImg.height;
     let dw, dh;
@@ -676,8 +954,9 @@
   });
   $('vol').addEventListener('input', e => audioEl.volume = parseFloat(e.target.value));
   audioEl.addEventListener('play', requestDraw);
-  audioEl.addEventListener('pause', requestDraw);
-  audioEl.addEventListener('seeked', requestDraw);
+  audioEl.addEventListener('pause', () => { requestDraw(); scheduleSave(); });
+  audioEl.addEventListener('seeked', () => { requestDraw(); scheduleSave(); });
+  audioEl.addEventListener('timeupdate', () => { if (!audioEl.paused) scheduleSave({ throttle: true }); });
 
   document.addEventListener('keydown', e => {
     if (/input|select|textarea/i.test(e.target.tagName)) return;
@@ -731,6 +1010,7 @@
       document.removeEventListener('pointermove', move);
       document.removeEventListener('pointerup', up);
       document.body.classList.remove('dragging');
+      scheduleSave();
     };
     document.addEventListener('pointermove', move);
     document.addEventListener('pointerup', up);
@@ -819,21 +1099,6 @@
     $('rec-status').textContent = '正在打包…';
   }
 
-  /* ---------------- 预设 ---------------- */
-  const PKEY = 'lyricplayer.preset.v1';
-  $('btn-preset-save').addEventListener('click', () => {
-    localStorage.setItem(PKEY, JSON.stringify(C));
-    $('rec-status').textContent = '预设已保存到本机浏览器';
-  });
-  $('btn-preset-load').addEventListener('click', () => {
-    const raw = localStorage.getItem(PKEY);
-    if (!raw) { alert('还没有保存过预设'); return; }
-    Object.assign(C, JSON.parse(raw));
-    Object.keys(BIND).forEach(writeEl);
-    updateVisibility(); updateOverlay();
-    S.pairs.forEach(p => p._k = null);
-    requestDraw();
-  });
 
   /* ---------------- 其他 ---------------- */
   $('btn-guides').addEventListener('click', () => {
@@ -854,9 +1119,22 @@
   buildOverlay();
   updateOverlay();
   updateTags();
+
+  loadIndex();
+  bindProjectUI();
+  renderProjectSelect();
+  switchTo(PJ.cur, true).then(() => renderProjectSelect());
+
+  // 关闭 / 刷新页面前最后一次落盘
+  window.addEventListener('beforeunload', () => { clearTimeout(saveTimer); snapshot(); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { clearTimeout(saveTimer); snapshot(); } });
+
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(requestDraw);
   requestAnimationFrame(loop);
 
   // 调试钩子（控制台可用：__player.audioEl.currentTime = 60）
-  window.__player = { audioEl: audioEl, S: S, C: C, render: render, requestDraw: requestDraw, rebuild: rebuild, jumpLine: jumpLine };
+  window.__player = {
+    audioEl: audioEl, S: S, C: C, render: render, requestDraw: requestDraw,
+    rebuild: rebuild, jumpLine: jumpLine, PJ: PJ, switchTo: switchTo, flushSave: flushSave
+  };
 })();

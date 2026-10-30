@@ -113,6 +113,16 @@ hr{border:none;border-top:1px solid var(--line);margin:4px 0}
 .status{font-size:12px;color:var(--acc)}
 .row.hide{display:none}
 
+/* ---------- 项目管理区 ---------- */
+.proj-sec summary{background:#191c24}
+.pbadge{
+  float:right;font-size:10px;font-weight:400;color:var(--acc);
+  border:1px solid rgba(255,215,106,.45);border-radius:20px;padding:1px 7px;margin-top:1px;
+}
+.pbadge.dirty{color:var(--danger);border-color:rgba(255,93,93,.5)}
+.row.btns{gap:6px;flex-wrap:wrap}
+.row.btns .btn{flex:1;min-width:74px;padding:5px 8px;text-align:center}
+
 /* ---------- playbar ---------- */
 .playbar{
   display:flex;align-items:center;gap:10px;padding:0 14px;

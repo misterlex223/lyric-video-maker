@@ -60,9 +60,14 @@ Drag and drop files straight into the window (audio / image / LRC / font auto-de
 - 24 / 30 / 60 fps, 4 / 8 / 16 Mbps
 - Record from the start or from the current playhead (for chorus-only clips)
 
+### Project management
+- **Autosave**: each project is a JSON document in localStorage — settings and lyric text save as you tweak
+- Multiple projects: create / switch / rename / delete, so the next song keeps its own look
+- Audio and background image persist in a local IndexedDB asset store — close the browser, reopen, everything (even the playhead) is back
+- **Export / import JSON**: save a project as a `.lyricproj.json` file (pure settings + lyric text, no audio/image binaries) for backup or moving between machines
+
 ### Extras
 - Global lyric offset (seconds) to sync subtitles with audio
-- Save / load style presets (localStorage)
 - Safe-area guides (bottom 22% is covered by platform UI)
 - Shortcuts: `Space` play/pause, `←` `→` seek, `⏮` `⏭` previous / next line
 
